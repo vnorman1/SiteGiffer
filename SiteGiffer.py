@@ -98,12 +98,32 @@ PRESETS = {
 # HELPER FUNCTIONS
 # ============================================================
 
+def normalize_url(url: str) -> str:
+    """
+    Normalize URL by adding https:// if missing.
+    e.g., "lobjetnorman.hu" -> "https://lobjetnorman.hu"
+         "www.example.com" -> "https://www.example.com"
+         "http://site.com" -> "http://site.com" (keeps http if specified)
+    """
+    url = url.strip()
+    if not url:
+        return url
+    
+    # If no protocol specified, add https://
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    return url
+
+
 def extract_domain_name(url: str) -> str:
     """
     Extract clean domain name from URL for filename.
     e.g., "https://lobjetnorman.hu/page" -> "lobjetnorman"
     """
     try:
+        # Normalize URL first
+        url = normalize_url(url)
         parsed = urlparse(url)
         domain = parsed.netloc or parsed.path
         # Remove www. prefix
@@ -578,9 +598,10 @@ class InteractiveCLI:
             self.menu_index = (self.menu_index - 1) % menu_len
         elif key == curses.KEY_DOWN:
             self.menu_index = (self.menu_index + 1) % menu_len
-        elif key in [curses.KEY_ENTER, 10, 13]:
+        if key in [curses.KEY_ENTER, 10, 13]:
             if self.menu_index == 0:  # Set URL
-                new_url = self.get_text_input("Enter website URL:", self.url)
+                new_url = self.get_text_input("Enter website URL (e.g., lobjetnorman.hu):", self.url)
+                new_url = normalize_url(new_url)  # Auto-add https://
                 if new_url != self.url:
                     self.url = new_url
                     self.auto_filename = True  # Reset to auto when URL changes

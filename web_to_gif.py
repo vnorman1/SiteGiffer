@@ -14,6 +14,7 @@ Features:
 - Optimized GIF output (reduced frames for smaller file size)
 """
 
+import datetime
 import time
 import os
 import subprocess
@@ -75,72 +76,99 @@ def smooth_scroll_page(page, scroll_step=50, delay=0.03, total_scrolls=None):
     print("✅ Smooth scroll completed!")
 
 
-def record_website_to_video(url, output_video="recording.webm", viewport_width=1260, viewport_height=720):
+def record_website_to_video(url, output_video="recording.webm", viewport_width=1260, viewport_height=720, preloader_wait=5):
     """
     Record a website scrolling session to a WebM video file.
+    Recording starts AFTER the preloader finishes to save file size.
     
     Args:
         url: Target website URL
         output_video: Output video filename
         viewport_width: Browser viewport width
         viewport_height: Browser viewport height
+        preloader_wait: Seconds to wait for preloader to finish (BEFORE recording starts)
     
     Returns:
         Path to the recorded video file
     """
-    print(f"\n🎬 Starting website recording...")
+    print(f"\n🎬 Preparing website recording...")
     print(f"   - URL: {url}")
     print(f"   - Viewport: {viewport_width}x{viewport_height}")
+    print(f"   - Preloader wait: {preloader_wait}s (before recording)")
     
     with sync_playwright() as p:
         # Launch Chromium in headless mode
         browser = p.chromium.launch(headless=True)
         
-        # Create browser context with video recording enabled
-        context = browser.new_context(
+        # ============================================================
+        # PHASE 1: Load page and wait for preloader WITHOUT recording
+        # ============================================================
+        
+        # Create context WITHOUT video recording first
+        context_preload = browser.new_context(
+            viewport={"width": viewport_width, "height": viewport_height}
+        )
+        
+        page_preload = context_preload.new_page()
+        
+        print(f"\n🌐 Navigating to {url}...")
+        
+        # Navigate to URL and wait for network to be idle
+        page_preload.goto(url, wait_until="networkidle", timeout=60000)
+        print("✅ Page loaded (network idle)")
+        
+        # Wait for preloader animation to finish (NO RECORDING YET!)
+        print(f"⏳ Waiting {preloader_wait}s for preloader to finish...")
+        time.sleep(preloader_wait)
+        print("✅ Preloader wait complete")
+        
+        # Close preload context
+        page_preload.close()
+        context_preload.close()
+        
+        # ============================================================
+        # PHASE 2: Start fresh with video recording AFTER preloader
+        # ============================================================
+        
+        print("\n🎥 Starting video recording (preloader skipped)...")
+        
+        # Create NEW context WITH video recording
+        context_record = browser.new_context(
             viewport={"width": viewport_width, "height": viewport_height},
             record_video_dir="./recordings",
             record_video_size={"width": viewport_width, "height": viewport_height}
         )
         
-        # Create new page
-        page = context.new_page()
+        page = context_record.new_page()
         
-        print(f"\n🌐 Navigating to {url}...")
-        
-        # Navigate to URL and wait for network to be idle
-        # This ensures React components and assets are fully loaded
+        # Navigate again - this time the page should be cached/faster
+        # and preloader should be done or skipped
         page.goto(url, wait_until="networkidle", timeout=60000)
         
-        print("✅ Page loaded (network idle)")
-        
-        # Additional wait for any late-loading animations/scripts
-        time.sleep(2)
-        
-        print("\n🎥 Recording started...")
-        
-        # Wait a moment before starting scroll (capture initial state)
+        # Small wait for any final animations to settle
         time.sleep(1)
         
+        print("🎥 Recording in progress...")
+        
         # Perform smooth scroll simulation
-        # Using small increments to trigger GSAP/Lenis animations
+        # Using larger steps for faster scrolling (reduces total frames)
         smooth_scroll_page(
             page,
-            scroll_step=40,    # Small steps for smooth animation
-            delay=0.025        # Short delay between steps
+            scroll_step=80,    # Larger steps = faster scroll = fewer frames
+            delay=0.04         # Slightly longer delay for smooth animation
         )
         
         # Wait a moment at the bottom
-        time.sleep(1.5)
+        time.sleep(0.8)
         
-        # Optional: Scroll back to top smoothly
+        # Optional: Scroll back to top
         print("\n📜 Scrolling back to top...")
         page.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
-        time.sleep(0.5)
+        time.sleep(0.3)
         
         # Close page and context to save video
         page.close()
-        context.close()
+        context_record.close()
         browser.close()
         
         print("✅ Recording stopped")
@@ -166,15 +194,17 @@ def record_website_to_video(url, output_video="recording.webm", viewport_width=1
     return None
 
 
-def convert_video_to_gif(video_path, output_gif="portfolio.gif", fps=15, optimize=True):
+def convert_video_to_gif(video_path, output_gif="portfolio.gif", fps=8, optimize=True, colors=128, lossy=80):
     """
-    Convert a video file to an optimized GIF using MoviePy.
+    Convert a video file to an optimized GIF using MoviePy and gifsicle/ffmpeg.
     
     Args:
         video_path: Path to input video file
         output_gif: Output GIF filename
-        fps: Frames per second for the GIF (lower = smaller file)
+        fps: Frames per second for the GIF (lower = smaller file, 8 is good balance)
         optimize: Whether to optimize the GIF
+        colors: Number of colors in palette (64-256, lower = smaller)
+        lossy: Lossy compression level (0-200, higher = smaller but lower quality)
     
     Returns:
         Path to the generated GIF file
@@ -183,22 +213,62 @@ def convert_video_to_gif(video_path, output_gif="portfolio.gif", fps=15, optimiz
     print(f"   - Input: {video_path}")
     print(f"   - Output: {output_gif}")
     print(f"   - FPS: {fps}")
+    print(f"   - Colors: {colors}")
     
     # Load the video
     video = VideoFileClip(video_path)
     
     # Get video info
     duration = video.duration
+    total_frames = int(duration * fps)
     print(f"   - Duration: {duration:.2f} seconds")
+    print(f"   - Estimated frames: {total_frames}")
     
-    # Convert to GIF (MoviePy 2.x API)
+    # Create temporary GIF first
+    temp_gif = "temp_portfolio.gif"
+    
+    # Convert to GIF with reduced FPS (MoviePy 2.x API)
     video.write_gif(
-        output_gif,
+        temp_gif,
         fps=fps
     )
     
     # Close the video clip
     video.close()
+    
+    # Optimize GIF using ffmpeg for better compression
+    print("\n🔧 Optimizing GIF with ffmpeg...")
+    
+    try:
+        # Use ffmpeg for palette optimization (much smaller file)
+        palette_cmd = [
+            "ffmpeg", "-y", "-i", video_path,
+            "-vf", f"fps={fps},scale=1260:-1:flags=lanczos,palettegen=max_colors={colors}:stats_mode=diff",
+            "palette.png"
+        ]
+        
+        gif_cmd = [
+            "ffmpeg", "-y", "-i", video_path, "-i", "palette.png",
+            "-lavfi", f"fps={fps},scale=1260:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
+            output_gif
+        ]
+        
+        subprocess.run(palette_cmd, capture_output=True, check=True)
+        subprocess.run(gif_cmd, capture_output=True, check=True)
+        
+        # Clean up palette and temp gif
+        if os.path.exists("palette.png"):
+            os.remove("palette.png")
+        if os.path.exists(temp_gif):
+            os.remove(temp_gif)
+            
+        print("✅ FFmpeg optimization complete!")
+        
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Fallback to MoviePy output if ffmpeg fails
+        print("⚠️  FFmpeg not available, using MoviePy output")
+        if os.path.exists(temp_gif):
+            os.rename(temp_gif, output_gif)
     
     # Get file sizes
     video_size = os.path.getsize(video_path) / (1024 * 1024)
@@ -212,7 +282,7 @@ def convert_video_to_gif(video_path, output_gif="portfolio.gif", fps=15, optimiz
     return output_gif
 
 
-def create_portfolio_gif(url, output_gif="portfolio.gif", cleanup=True):
+def create_portfolio_gif(url, output_gif="portfolio.gif", cleanup=True, preloader_wait=5, fps=8, colors=128):
     """
     Main function to create a portfolio GIF from a website URL.
     
@@ -220,6 +290,9 @@ def create_portfolio_gif(url, output_gif="portfolio.gif", cleanup=True):
         url: Target website URL
         output_gif: Output GIF filename
         cleanup: Whether to delete intermediate video file
+        preloader_wait: Seconds to wait for preloader animation
+        fps: Frames per second (8 is good for small file size)
+        colors: Number of colors in GIF palette (64-256)
     
     Returns:
         Path to the generated GIF file
@@ -229,14 +302,14 @@ def create_portfolio_gif(url, output_gif="portfolio.gif", cleanup=True):
     print("=" * 60)
     
     # Step 1: Record the website
-    video_path = record_website_to_video(url)
+    video_path = record_website_to_video(url, preloader_wait=preloader_wait)
     
     if not video_path:
         print("❌ Error: Failed to record video")
         return None
     
-    # Step 2: Convert to GIF
-    gif_path = convert_video_to_gif(video_path, output_gif)
+    # Step 2: Convert to GIF with optimization
+    gif_path = convert_video_to_gif(video_path, output_gif, fps=fps, colors=colors)
     
     # Step 3: Cleanup (optional)
     if cleanup and os.path.exists(video_path):
@@ -256,15 +329,28 @@ def create_portfolio_gif(url, output_gif="portfolio.gif", cleanup=True):
 # ============================================================
 
 if __name__ == "__main__":
-    # Configuration
-    TARGET_URL = "https://lobjetnorman.hu"  # Replace with your React website URL
+    # ============================================================
+    # CONFIGURATION - Adjust these settings
+    # ============================================================
+    
+    TARGET_URL = "https://lobjetnorman.hu"  # Your React website URL
     OUTPUT_GIF = "portfolio.gif"
+    
+    # Optimization settings for smaller file size
+    PRELOADER_WAIT = 5    # Seconds to wait for preloader animation
+    GIF_FPS = 6           # Frames per second (6-8 is good, lower = smaller)
+    GIF_COLORS = 64       # Color palette size (64-256, lower = smaller)
+    
+    # ============================================================
     
     # Create the portfolio GIF
     result = create_portfolio_gif(
         url=TARGET_URL,
         output_gif=OUTPUT_GIF,
-        cleanup=True  # Set to False to keep the .webm video file
+        cleanup=True,              # Set to False to keep the .webm video file
+        preloader_wait=PRELOADER_WAIT,
+        fps=GIF_FPS,
+        colors=GIF_COLORS
     )
     
     if result:

@@ -1,0 +1,14 @@
+# Web to GIF Portfolio Showcase - Requirements
+# =============================================
+
+# Playwright for browser automation and screen recording
+playwright>=1.40.0
+
+# MoviePy for video to GIF conversion
+moviepy>=1.0.3
+
+# ImageIO for GIF optimization (dependency of moviepy)
+imageio>=2.31.0
+
+# ImageIO-ffmpeg for video processing
+imageio-ffmpeg>=0.4.9
